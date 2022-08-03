@@ -18,6 +18,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -104,7 +105,7 @@ public class CurrencyServiceImpl implements CurrencyService {
 
     private HttpHeaders getHttpHeaderCRC32(String responseBody) {
         CRC32 crc = new CRC32();
-        crc.update(responseBody.getBytes());
+        crc.update(responseBody.getBytes(StandardCharsets.UTF_8));
         HttpHeaders responseHeaders = new HttpHeaders();
         responseHeaders.set("CRC32", String.valueOf(crc.getValue()));
         return responseHeaders;
