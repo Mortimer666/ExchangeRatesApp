@@ -6,11 +6,12 @@ import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Table;
+import java.io.Serializable;
 import java.math.BigDecimal;
 
 @Table(name = "Currency")
 @Entity
-public class MyCurrency {
+public class MyCurrency implements Serializable {
 
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
@@ -56,9 +57,27 @@ public class MyCurrency {
         this.scale = scale;
     }
 
-    @Override
-    public String toString() {
-        return String.format("Валюта - %d %s(%s, внутренний код - %d). Курс на дату %s составляет %s",
-                scale, name, abbreviation, currencyId, date, rate.toString());
+    public Integer getCurrencyId() {
+        return currencyId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getAbbreviation() {
+        return abbreviation;
+    }
+
+    public String getDate() {
+        return date;
+    }
+
+    public BigDecimal getRate() {
+        return rate;
+    }
+
+    public Integer getScale() {
+        return scale;
     }
 }

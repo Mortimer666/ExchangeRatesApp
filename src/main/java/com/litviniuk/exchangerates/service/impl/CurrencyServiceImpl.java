@@ -5,16 +5,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litviniuk.exchangerates.dto.MyCurrencyDto;
 import com.litviniuk.exchangerates.entity.MyCurrency;
-import com.litviniuk.exchangerates.exception.TroublesWithJsonException;
-import com.litviniuk.exchangerates.exception.WrongDateException;
 import com.litviniuk.exchangerates.repository.CurrencyRepository;
 import com.litviniuk.exchangerates.service.CurrencyService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.zip.CRC32;
 
 @Service
@@ -40,6 +41,10 @@ public class CurrencyServiceImpl implements CurrencyService {
     private static final String CUR_ABBREVIATION = "Cur_Abbreviation";
     private static final String CUR_OFFICIAL_RATE = "Cur_OfficialRate";
     private static final String CUR_SCALE = "Cur_Scale";
+    @Value("${api.all.rates.url}")
+    private String getAllRatesOnDate;
+    @Value("${api.single.rate.url}")
+    String getRateForSpecificCurrencyOnDate;
 
     @Autowired
     public CurrencyServiceImpl(CurrencyRepository currencyRepository, RestTemplate restTemplate, ObjectMapper objectMapper) {
@@ -49,63 +54,65 @@ public class CurrencyServiceImpl implements CurrencyService {
     }
 
     @Override
-    public ResponseEntity<String> getAllRatesAndSaveThemInDatabase(String date) {
-        String getAllRatesOnDate = "https://www.nbrb.by/api/exrates/rates?ondate=%s&periodicity=0";
-        validateStringDateForAllRates(date);
-        String currencyResponse = restTemplate.getForObject(String.format(getAllRatesOnDate, date), String.class);
-        if (currencyRepository.getMyCurrencyByDateIs(formatDateToRusFormat(date)) != null) {
-            throw new WrongDateException(date);
+    public ResponseEntity<JsonNode> getAllRatesAndSaveThemInDatabase(String date) {
+        if (!currencyRepository.getAllByDateIs(formatDateToRusFormat(date)).isEmpty()) {
+            throw new IllegalArgumentException(String.format(
+                    "Rates for the given date: %s are already stored in the database. Try to enter a different date.",
+                    date));
+        }
+        String currencyResponse;
+        try {
+            currencyResponse = restTemplate.getForObject(String.format(getAllRatesOnDate, date), String.class);
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            throw new IllegalArgumentException(String.format(
+                    "Third-party API crashed with entered date: %s. Http status code: %d", date, e.getRawStatusCode()));
         }
         List<MyCurrency> myCurrencies = mapJsonToListOfCurrencies(date, currencyResponse);
+        if (myCurrencies.isEmpty()) {
+            throw new IllegalArgumentException(String.format("Third-party API returned empty list on date: %s", date));
+        }
         currencyRepository.saveAll(myCurrencies);
-        String responseBody = String.format("Курсы валют установленные %s успешно сохранены", formatDateToRusFormat(date));
+        JsonNode responseBody = objectMapper.valueToTree(myCurrencies);
         return new ResponseEntity<>(responseBody, getHttpHeaderCRC32(responseBody), HttpStatus.OK);
     }
 
     @Override
-    public ResponseEntity<String> getRateForSpecificCurrencyOnDate(Integer id, String date) {
-        if (id < 1 || id > 514) {
-            throw new IllegalArgumentException(
-                    String.format("Id в пределах от 1 до 514 включительно. Вы ввели = %d", id));
+    public ResponseEntity<JsonNode> getRateForSpecificCurrencyOnDate(Integer id, String date) {
+        Optional<MyCurrency> requestedCurrencyOptional = currencyRepository.getMyCurrencyByCurrencyIdAndDate(
+                id, formatDateToRusFormat(date));
+        if (requestedCurrencyOptional.isEmpty()) {
+            throw new IllegalArgumentException(String.format(
+                    "Could not find records in the database for the specified parameters: id:%d, date:%s", id, date));
         }
-        validateStringDateForRateTakenById(date);
-        String getRateForSpecificCurrencyOnDate = "https://www.nbrb.by/api/exrates/rates/%d?ondate=%s";
-        String currencyResponse;
-        try {
-            currencyResponse = restTemplate.getForObject(String.format(
-                    getRateForSpecificCurrencyOnDate, id, date), String.class);
-        } catch (HttpClientErrorException e) {
-            throw new HttpClientErrorException(
-                    e.getStatusCode(), "ошибка. Данные, которые Вы запросили, не были найдены.");
+        MyCurrencyDto myCurrencyDto = convertMyCurrencyToMyCurrencyDto(requestedCurrencyOptional.get());
+        Optional<MyCurrency> requestedCurrencyOnPreviousBusinessDayOptional = currencyRepository.
+                getMyCurrencyByCurrencyIdAndDate(id, formatDateToRusFormat(getPreviousBusinessDay(date)));
+        if (requestedCurrencyOnPreviousBusinessDayOptional.isEmpty()) {
+            myCurrencyDto.setExchangeRateDifference("Курс за предыдущий рабочий день не найден");
+        } else {
+            MyCurrencyDto myCurrencyDtoOnPreviousBusinessDay = convertMyCurrencyToMyCurrencyDto(
+                    requestedCurrencyOnPreviousBusinessDayOptional.get());
+            comparesRatesOfCurrenciesAndSetExchangeDifference(myCurrencyDto, myCurrencyDtoOnPreviousBusinessDay.getRate());
         }
-        JsonNode currencyNode = mapJsonToJsonNode(currencyResponse);
-        BigDecimal rateOnCurrentDate = new BigDecimal(currencyNode.findPath(CUR_OFFICIAL_RATE).asText());
-        String currencyResponseOnPreviousBusinessDay;
-        StringBuilder partOfResponse;
-        try {
-            currencyResponseOnPreviousBusinessDay = restTemplate.getForObject(String.format(
-                    getRateForSpecificCurrencyOnDate, id, getPreviousBusinessDay(date)), String.class);
-            JsonNode currencyNodeOnPreviousBusinessDay = mapJsonToJsonNode(currencyResponseOnPreviousBusinessDay);
-            BigDecimal rateOnPreviousDate = new BigDecimal(
-                    currencyNodeOnPreviousBusinessDay.findPath(CUR_OFFICIAL_RATE).asText());
-            partOfResponse = new StringBuilder("По сравнению с предыдущим рабочим днем курс ");
-            if (rateOnCurrentDate.compareTo(rateOnPreviousDate) < 0) {
-                partOfResponse.append("снизился");
-            } else if (rateOnCurrentDate.compareTo(rateOnPreviousDate) > 0) {
-                partOfResponse.append("поднялся");
-            } else {
-                partOfResponse.append("не изменился");
-            }
-        } catch (HttpClientErrorException e) {
-            partOfResponse = new StringBuilder();
-        }
-        String responseBody = buildMyCurrencyDto(formatDateToRusFormat(date), currencyNode) + ". " + partOfResponse;
-        return new ResponseEntity<>(responseBody, getHttpHeaderCRC32(responseBody), HttpStatus.OK);
+        JsonNode responseBody = objectMapper.valueToTree(myCurrencyDto);
+        return new ResponseEntity<>(responseBody,
+                getHttpHeaderCRC32(responseBody), HttpStatus.OK);
     }
 
-    private HttpHeaders getHttpHeaderCRC32(String responseBody) {
+    private void comparesRatesOfCurrenciesAndSetExchangeDifference(
+            MyCurrencyDto myCurrencyDto, BigDecimal currencyRateOnPreviousBusinessDay) {
+        if (myCurrencyDto.getRate().compareTo(currencyRateOnPreviousBusinessDay) < 0) {
+            myCurrencyDto.setExchangeRateDifference("Курс снизился");
+        } else if (myCurrencyDto.getRate().compareTo(currencyRateOnPreviousBusinessDay) > 0) {
+            myCurrencyDto.setExchangeRateDifference("Курс поднялся");
+        } else {
+            myCurrencyDto.setExchangeRateDifference("Курс не изменился");
+        }
+    }
+
+    private HttpHeaders getHttpHeaderCRC32(JsonNode responseBody) {
         CRC32 crc = new CRC32();
-        crc.update(responseBody.getBytes(StandardCharsets.UTF_8));
+        crc.update(responseBody.toString().getBytes(StandardCharsets.UTF_8));
         HttpHeaders responseHeaders = new HttpHeaders();
         responseHeaders.set("CRC32", String.valueOf(crc.getValue()));
         return responseHeaders;
@@ -115,14 +122,14 @@ public class CurrencyServiceImpl implements CurrencyService {
         LocalDate localDate = convertStringToLocalDate(date);
         switch (localDate.get(ChronoField.DAY_OF_WEEK)) {
             case 1:
-            case 7:
                 return localDate.minusDays(3).toString();
             case 2:
             case 3:
             case 4:
             case 5:
-                return localDate.minusDays(1).toString();
             case 6:
+                return localDate.minusDays(1).toString();
+            case 7:
                 return localDate.minusDays(2).toString();
             default:
                 return date;
@@ -140,14 +147,14 @@ public class CurrencyServiceImpl implements CurrencyService {
         return currency;
     }
 
-    private MyCurrencyDto buildMyCurrencyDto(String date, JsonNode currencyNode) {
+    private MyCurrencyDto convertMyCurrencyToMyCurrencyDto(MyCurrency myCurrency) {
         MyCurrencyDto currencyDto = new MyCurrencyDto();
-        currencyDto.setCurrencyId(Integer.decode(currencyNode.findPath(CUR_ID).asText()));
-        currencyDto.setName(currencyNode.findPath(CUR_NAME).asText());
-        currencyDto.setAbbreviation(currencyNode.findPath(CUR_ABBREVIATION).asText());
-        currencyDto.setDate(date);
-        currencyDto.setRate(new BigDecimal(currencyNode.findPath(CUR_OFFICIAL_RATE).asText()));
-        currencyDto.setScale(Integer.decode(currencyNode.findPath(CUR_SCALE).asText()));
+        currencyDto.setCurrencyId(myCurrency.getCurrencyId());
+        currencyDto.setName(myCurrency.getName());
+        currencyDto.setAbbreviation(myCurrency.getAbbreviation());
+        currencyDto.setDate(myCurrency.getDate());
+        currencyDto.setRate(myCurrency.getRate());
+        currencyDto.setScale(myCurrency.getScale());
         return currencyDto;
     }
 
@@ -156,7 +163,8 @@ public class CurrencyServiceImpl implements CurrencyService {
         try {
             parent = objectMapper.readTree(currencyResponse);
         } catch (JsonProcessingException e) {
-            throw new TroublesWithJsonException("Не удалось получить корректные данные от стороннего API");
+            throw new IllegalArgumentException(
+                    String.format("Incorrect data from third-party API. %s", e.getMessage()));
         }
         return parent;
     }
@@ -184,27 +192,8 @@ public class CurrencyServiceImpl implements CurrencyService {
         try {
             localDate = LocalDate.parse(date, formatter);
         } catch (DateTimeException e) {
-            throw new DateTimeException("Веддите дату в формате: гггг-м-д");
+            throw new IllegalArgumentException("Format your date like: yyyy-M-d");
         }
         return localDate;
-    }
-
-    private void validateStringDateForAllRates(String date) {
-        LocalDate localDate = convertStringToLocalDate(date);
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd MMMM yyyy", Locale.forLanguageTag("ru"));
-        if (localDate.isBefore(LocalDate.of(1995, 3, 29))
-                || localDate.isAfter(LocalDate.now())) {
-            throw new WrongDateException(String.format(
-                    "Неверная дата: %s. Корректные даты в диапазоне от 29 марта 1995 до %s",
-                    date, LocalDate.now().format(formatter)));
-        }
-    }
-
-    private void validateStringDateForRateTakenById(String date) {
-        LocalDate localDate = convertStringToLocalDate(date);
-        if (localDate.isBefore(LocalDate.of(1991, 1, 1))
-                || localDate.isAfter(LocalDate.now())) {
-            throw new WrongDateException(String.format("Неверная дата: %s.", date));
-        }
     }
 }

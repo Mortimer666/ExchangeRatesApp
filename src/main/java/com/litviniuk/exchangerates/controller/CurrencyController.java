@@ -1,6 +1,7 @@
 package com.litviniuk.exchangerates.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.litviniuk.exchangerates.service.CurrencyService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -26,7 +27,7 @@ public class CurrencyController {
     }
 
     @GetMapping("/get-all-rates-on-date/{date}")
-    public ResponseEntity<String> getAllRatesAndSaveThemInDatabase(
+    public ResponseEntity<JsonNode> getAllRatesAndSaveThemInDatabase(
             @PathVariable String date,
             HttpServletRequest request) throws JsonProcessingException {
         LOGGER.info("Request - Method: {}. Protocol/version: {}. Full path: {}:{}{}",
@@ -35,13 +36,13 @@ public class CurrencyController {
                 request.getServerName(),
                 request.getServerPort(),
                 request.getRequestURI());
-        ResponseEntity<String> resp = currencyService.getAllRatesAndSaveThemInDatabase(date);
+        ResponseEntity<JsonNode> resp = currencyService.getAllRatesAndSaveThemInDatabase(date);
         LOGGER.info("Response - {}", resp);
         return resp;
     }
 
     @GetMapping("/get-rate-for-specific-currency-on-date/{id}/{date}")
-    public ResponseEntity<String> getRateForSpecificCurrencyOnDate(
+    public ResponseEntity<JsonNode> getRateForSpecificCurrencyOnDate(
             @PathVariable Integer id,
             @PathVariable String date,
             HttpServletRequest request) throws JsonProcessingException {
@@ -51,7 +52,7 @@ public class CurrencyController {
                 request.getServerName(),
                 request.getServerPort(),
                 request.getRequestURI());
-        ResponseEntity<String> resp = currencyService.getRateForSpecificCurrencyOnDate(id, date);
+        ResponseEntity<JsonNode> resp = currencyService.getRateForSpecificCurrencyOnDate(id, date);
         LOGGER.info("Response - {}", resp);
         return resp;
     }

@@ -10,6 +10,7 @@ public class MyCurrencyDto {
     private String date;
     private BigDecimal rate;
     private Integer scale;
+    private String exchangeRateDifference;
 
     public MyCurrencyDto() {
     }
@@ -38,9 +39,35 @@ public class MyCurrencyDto {
         this.scale = scale;
     }
 
-    @Override
-    public String toString() {
-        return String.format("Валюта - %d %s(%s, внутренний код - %d). Курс на дату - %s составляет %s",
-                scale, name, abbreviation, currencyId, date, rate.toString());
+    public Integer getCurrencyId() {
+        return currencyId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getAbbreviation() {
+        return abbreviation;
+    }
+
+    public String getDate() {
+        return date;
+    }
+
+    public BigDecimal getRate() {
+        return rate;
+    }
+
+    public Integer getScale() {
+        return scale;
+    }
+
+    public String getExchangeRateDifference() {
+        return exchangeRateDifference;
+    }
+
+    public void setExchangeRateDifference(String exchangeRateDifference) {
+        this.exchangeRateDifference = exchangeRateDifference;
     }
 }
